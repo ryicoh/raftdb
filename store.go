@@ -23,6 +23,7 @@ type RocksDBStore struct {
 type DataStore interface {
 	Get(key []byte) ([]byte, error)
 	Set(key []byte, val []byte) error
+	Delete(key []byte) error
 }
 
 // RocksDBStoreが以下のインターフェイスを実装していることを保証する
@@ -66,6 +67,10 @@ func (r *RocksDBStore) Get(key []byte) ([]byte, error) {
 	}
 	defer slice.Free()
 	return slice.Data(), nil
+}
+
+func (r *RocksDBStore) Delete(key []byte) error {
+	return r.db.Delete(defaultWriteOptions, key)
 }
 
 func (r *RocksDBStore) SetUint64(key []byte, val uint64) error {

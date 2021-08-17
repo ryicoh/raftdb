@@ -1,27 +1,54 @@
 package raftdb
 
 import (
-	"errors"
 	"fmt"
 	"io/ioutil"
 	"net/http"
+	"strconv"
 	"strings"
 
 	"github.com/hashicorp/raft"
 )
 
 type APIServer struct {
+	*http.ServeMux
 	*RaftNode
 	DataStore
+	raft.LogStore
 }
 
 // APIサーバは http.Handler を実装
 var _apiServer http.Handler = &APIServer{}
 
-func (a *APIServer) ServeHTTP(rw http.ResponseWriter, r *http.Request) {
-	key, err := a.decodePath(r.URL.Path)
+func NewAPIServer(rf *RaftNode, dataStore DataStore, logStore raft.LogStore) *APIServer {
+	mux := http.NewServeMux()
+	api := &APIServer{
+		ServeMux:  mux,
+		RaftNode:  rf,
+		DataStore: dataStore,
+		LogStore:  logStore,
+	}
+
+	mux.HandleFunc("/index", api.handleIndex)
+	mux.HandleFunc("/key/", api.handleKey)
+
+	return api
+}
+
+func (a *APIServer) handleIndex(rw http.ResponseWriter, r *http.Request) {
+	index, err := a.LastIndex()
 	if err != nil {
-		http.Error(rw, "パスパラメータを取得できません", http.StatusBadRequest)
+		http.Error(rw, "インデックスが見つかりません", http.StatusNotFound)
+		return
+	}
+
+	rw.Write([]byte(strconv.FormatUint(index, 10)))
+}
+
+func (a *APIServer) handleKey(rw http.ResponseWriter, r *http.Request) {
+	key := []byte(strings.TrimPrefix(r.URL.Path, "/key/"))
+	if len(key) == 0 {
+		http.Error(rw, "キーが取得できませんでした", http.StatusBadRequest)
 		return
 	}
 
@@ -64,16 +91,4 @@ func (a *APIServer) ServeHTTP(rw http.ResponseWriter, r *http.Request) {
 	}
 
 	rw.Write([]byte("ok"))
-}
-
-func (a *APIServer) decodePath(path string) ([]byte, error) {
-	parts := strings.Split(path, "/")
-	if len(parts) != 2 {
-		return nil, errors.New("パスからキーを取り出せませんでした")
-	}
-	if parts[0] != "key" {
-		return nil, errors.New("パスは /key/:key である必要があります")
-	}
-
-	return []byte(parts[1]), nil
 }

@@ -2,11 +2,12 @@ package raftdb
 
 import (
 	"encoding/json"
+	"fmt"
 	"strconv"
 
 	"github.com/flier/gorocksdb"
+	"github.com/hashicorp/go-hclog"
 	"github.com/hashicorp/raft"
-	"go.uber.org/zap"
 )
 
 // ストレージエンジンには、rocksdbを利用
@@ -16,7 +17,7 @@ import (
 // Pull Requestを出していた http://github.com/flier/gorocksdb を利用
 type RocksDBStore struct {
 	db     *gorocksdb.DB
-	logger *zap.Logger
+	logger hclog.Logger
 }
 
 // データ保存用の独自のストア
@@ -44,7 +45,7 @@ var (
 	defaultWriteOptions = gorocksdb.NewDefaultWriteOptions()
 )
 
-func NewRocksDBStore(name string, logger *zap.Logger) (*RocksDBStore, error) {
+func NewRocksDBStore(name string, logger hclog.Logger) (*RocksDBStore, error) {
 	opts := gorocksdb.NewDefaultOptions()
 	opts.SetCreateIfMissing(true)
 	db, err := gorocksdb.OpenDb(opts, name)
@@ -57,27 +58,48 @@ func NewRocksDBStore(name string, logger *zap.Logger) (*RocksDBStore, error) {
 
 // Set, Get, GetUint64, SetUint64 は、raft.StableStore を実装
 func (r *RocksDBStore) Set(key []byte, val []byte) error {
+	r.logger.Debug("Set", "key", string(key), "val", string(val))
+
 	return r.db.Put(defaultWriteOptions, key, val)
 }
 
-func (r *RocksDBStore) Get(key []byte) ([]byte, error) {
+func (r *RocksDBStore) Get(key []byte) (val []byte, err error) {
+	defer func() {
+		r.logger.Debug("Get", "key", string(key), "val", string(val))
+	}()
+
 	slice, err := r.db.Get(defaultReadOptions, key)
 	if err != nil {
 		return nil, err
 	}
 	defer slice.Free()
-	return slice.Data(), nil
+
+	if slice.Data() == nil {
+		return nil, err
+	}
+
+	val = make([]byte, len(slice.Data()))
+	copy(val, slice.Data())
+	return
 }
 
 func (r *RocksDBStore) Delete(key []byte) error {
+	r.logger.Debug("Delete", "key", string(key))
+
 	return r.db.Delete(defaultWriteOptions, key)
 }
 
 func (r *RocksDBStore) SetUint64(key []byte, val uint64) error {
+	r.logger.Debug("SetUint64", "key", string(key), "val", val)
+
 	return r.Set(key, []byte(strconv.FormatUint(val, 10)))
 }
 
-func (r *RocksDBStore) GetUint64(key []byte) (uint64, error) {
+func (r *RocksDBStore) GetUint64(key []byte) (u64 uint64, err error) {
+	defer func() {
+		r.logger.Debug("GetUint64", "key", string(key), "val", u64)
+	}()
+
 	val, err := r.Get(key)
 	if err != nil {
 		return 0, err
@@ -87,16 +109,16 @@ func (r *RocksDBStore) GetUint64(key []byte) (uint64, error) {
 		return 0, nil
 	}
 
-	u64, err := strconv.ParseUint(string(val), 10, 0)
-	if err != nil {
-		return 0, err
-	}
-
-	return u64, nil
+	u64, err = strconv.ParseUint(string(val), 10, 0)
+	return
 }
 
 // FirstIndex, LastIndex, GetLog, StoreLog, StoreLogs, DeleteRange は、raft.LogStore を実装
 func (r *RocksDBStore) FirstIndex() (index uint64, err error) {
+	defer func() {
+		r.logger.Debug("FirstIndex", "firstIndex", fmt.Sprint(index))
+	}()
+
 	it := r.db.NewIterator(defaultReadOptions)
 	defer it.Close()
 	if it.SeekToFirst(); it.Valid() {
@@ -112,6 +134,10 @@ func (r *RocksDBStore) FirstIndex() (index uint64, err error) {
 }
 
 func (r *RocksDBStore) LastIndex() (index uint64, err error) {
+	defer func() {
+		r.logger.Debug("LastIndex", "lastIndex", fmt.Sprint(index))
+	}()
+
 	it := r.db.NewIterator(defaultReadOptions)
 	defer it.Close()
 	if it.SeekToLast(); it.Valid() {
@@ -126,8 +152,13 @@ func (r *RocksDBStore) LastIndex() (index uint64, err error) {
 	return
 }
 
-func (r *RocksDBStore) GetLog(index uint64, log *raft.Log) error {
-	val, err := r.Get([]byte(strconv.FormatUint(index, 10)))
+func (r *RocksDBStore) GetLog(index uint64, log *raft.Log) (err error) {
+	var val []byte
+	defer func() {
+		r.logger.Debug("GetLog", "index", fmt.Sprint(index), "log", string(val))
+	}()
+
+	val, err = r.Get([]byte(strconv.FormatUint(index, 10)))
 	if err != nil {
 		return err
 	}
@@ -138,8 +169,13 @@ func (r *RocksDBStore) GetLog(index uint64, log *raft.Log) error {
 	return json.Unmarshal(val, log)
 }
 
-func (r *RocksDBStore) StoreLog(log *raft.Log) error {
-	val, err := json.Marshal(log)
+func (r *RocksDBStore) StoreLog(log *raft.Log) (err error) {
+	var val []byte
+	defer func() {
+		r.logger.Debug("StoreLog", "log", string(val))
+	}()
+
+	val, err = json.Marshal(log)
 	if err != nil {
 		return err
 	}
@@ -147,7 +183,18 @@ func (r *RocksDBStore) StoreLog(log *raft.Log) error {
 	return r.Set([]byte(strconv.FormatUint(log.Index, 10)), val)
 }
 
-func (r *RocksDBStore) StoreLogs(logs []*raft.Log) error {
+func (r *RocksDBStore) StoreLogs(logs []*raft.Log) (err error) {
+	var debugLogs []interface{}
+	for i, log := range logs {
+		val, err := json.Marshal(log)
+		if err != nil {
+			return err
+		}
+		debugLogs = append(debugLogs, fmt.Sprintf("logs[%d]", i))
+		debugLogs = append(debugLogs, string(val))
+	}
+	r.logger.Debug("StoreLog", debugLogs...)
+
 	wb := gorocksdb.NewWriteBatch()
 	for _, log := range logs {
 		val, err := json.Marshal(log)
@@ -162,6 +209,7 @@ func (r *RocksDBStore) StoreLogs(logs []*raft.Log) error {
 }
 
 func (r *RocksDBStore) DeleteRange(min uint64, max uint64) error {
+	r.logger.Debug("DeleteRange", "min", min, "max", max)
 	wb := gorocksdb.NewWriteBatch()
 
 	it := r.db.NewIterator(gorocksdb.NewDefaultReadOptions())

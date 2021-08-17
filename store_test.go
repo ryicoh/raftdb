@@ -10,8 +10,8 @@ import (
 
 	"github.com/flier/gorocksdb"
 	"github.com/google/uuid"
+	"github.com/hashicorp/go-hclog"
 	"github.com/hashicorp/raft"
-	"go.uber.org/zap"
 )
 
 func newDBAndStore(t *testing.T) (*gorocksdb.DB, *RocksDBStore, func()) {
@@ -19,7 +19,7 @@ func newDBAndStore(t *testing.T) (*gorocksdb.DB, *RocksDBStore, func()) {
 	opts := gorocksdb.NewDefaultOptions()
 	opts.SetCreateIfMissing(true)
 	db, err := gorocksdb.OpenDb(opts, dir)
-	store := &RocksDBStore{db, zap.NewExample()}
+	store := &RocksDBStore{db, hclog.Default()}
 	if err != nil {
 		t.Fatal(err)
 	}
